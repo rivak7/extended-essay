@@ -17,7 +17,7 @@ class Rocket:
         self.T0 = T0  # Sea level temperature (K)
         self.p = psea  # Current air density (kg/m^3)
         self.thrustcurve = self.load_thrust_curve(thrust_file)
-        self.output_file = output_file  # CSV output file
+        self.output_file = output_file
 
     def load_thrust_curve(self, file):
         thrustcurve = []
@@ -27,7 +27,7 @@ class Rocket:
                 try:
                     thrustcurve.append((float(row[0]), float(row[1])))
                 except ValueError:
-                    continue  # Skip headers or invalid rows
+                    continue
         return thrustcurve
 
     def get_thrust(self, t):
@@ -38,11 +38,10 @@ class Rocket:
                 t1, T1 = self.thrustcurve[i - 1]
                 t2, T2 = self.thrustcurve[i]
                 return ((t - t1) / (t2 - t1)) * (T2 - T1) + T1
-        return 0  # No thrust after the last point
+        return 0
 
     def update_pressure(self):
-        self.p = ((0.0289652 * self.p0) / (8.31446 * self.T0)) * math.pow((1 - (0.0065 * self.s / self.T0)),
-                                                                           (((0.0289652 * self.g) / (8.31446 * 0.0065)) - 1))
+        self.p = ((0.0289652 * self.p0) / (8.31446 * self.T0)) * math.pow((1 - (0.0065 * self.s / self.T0)), (((0.0289652 * self.g) / (8.31446 * 0.0065)) - 1))
 
     def update_mass(self):
         if self.get_thrust(self.t)>=0:
@@ -62,7 +61,6 @@ class Rocket:
         self.s += self.v * self.dt
         self.t += self.dt
 
-        # Output the current state to CSV
         with open(self.output_file, 'a', newline='') as file:
             writer = csv.writer(file)
             writer.writerow([self.t, self.s, self.v, a])
@@ -70,7 +68,6 @@ class Rocket:
     def solve_euler(self, step):
         self.dt = step
 
-        # Write headers to the CSV file
         with open(self.output_file, 'w', newline='') as file:
             writer = csv.writer(file)
             writer.writerow(["Time (s)", "Altitude (m)", "Velocity (m/s)", "Acceleration (m/s^2)"])
@@ -79,55 +76,45 @@ class Rocket:
             self.update_euler()
 
     def update_rk4(self):
-        # Save the initial state
         initial_mass = self.m
         initial_pressure = self.p
 
-        # Update pressure and mass at the start of the timestep
         self.update_pressure()
         self.update_mass()
 
-        # Calculate k1
         k1v = self.acceleration()
         k1s = self.v
-
-        # Intermediate step for k2
-        self.t_temp = self.t + 0.5 * self.dt  # Half-step for time
-        self.s_temp = self.s + 0.5 * k1s * self.dt  # Half-step for position
-        self.v_temp = self.v + 0.5 * k1v * self.dt  # Half-step for velocity
+	
+        self.t_temp = self.t + 0.5 * self.dt
+        self.s_temp = self.s + 0.5 * k1s * self.dt
+        self.v_temp = self.v + 0.5 * k1v * self.dt
         self.update_pressure()
         self.update_mass()
         k2v = self.acceleration()
         k2s = self.v
 
-        # Intermediate step for k3
-        self.s_temp = self.s + 0.5 * k2s * self.dt - 0.5 * k1s * self.dt  # Correct for previous half-step
-        self.v_temp = self.v + 0.5 * k2v * self.dt - 0.5 * k1v * self.dt  # Correct for previous half-step
+        self.s_temp = self.s + 0.5 * k2s * self.dt - 0.5 * k1s * self.dt
+        self.v_temp = self.v + 0.5 * k2v * self.dt - 0.5 * k1v * self.dt
         self.update_pressure()
         self.update_mass()
         k3v = self.acceleration()
         k3s = self.v
 
-        # Final step for k4
-        self.s_temp = self.s + k3s * self.dt - 0.5 * k2s * self.dt  # Correct for previous half-step
-        self.v_temp = self.v + k3v * self.dt - 0.5 * k2v * self.dt  # Correct for previous half-step
+        self.s_temp = self.s + k3s * self.dt - 0.5 * k2s * self.dt
+        self.v_temp = self.v + k3v * self.dt - 0.5 * k2v * self.dt
         self.update_pressure()
         self.update_mass()
         k4v = self.acceleration()
         k4s = self.v
 
-        # Update state variables using weighted average
+        # RK4 update
         self.v += (self.dt / 6) * (k1v + 2 * k2v + 2 * k3v + k4v)
         self.s += (self.dt / 6) * (k1s + 2 * k2s + 2 * k3s + k4s)
 
-        # Restore mass and pressure to the correct state
         self.m = initial_mass
         self.p = initial_pressure
+        self.t += self.dt
 
-        # Advance time by the full timestep
-        self.t += self.dt  # Now we update time once at the end
-
-        # Write to CSV every timestep (0.001 s)
         with open(self.output_file, 'a', newline='') as file:
             writer = csv.writer(file)
             writer.writerow([self.t, self.s, self.v, self.acceleration()])
@@ -135,7 +122,6 @@ class Rocket:
     def solve_rk4(self, step):
         self.dt = step
 
-        # Write headers to the CSV file
         with open(self.output_file, 'w', newline='') as file:
             writer = csv.writer(file)
             writer.writerow(["Time (s)", "Altitude (m)", "Velocity (m/s)", "Acceleration (m/s^2)"])
@@ -143,6 +129,7 @@ class Rocket:
         while self.v >= 0:
             self.update_rk4()
 
+# Driver code: call either function to implement either explicit Euler or Runge-Kutta 4th order (RK4)
 if __name__ == "__main__":
     rocket = Rocket(
         thrust_file="AeroTech_F67W.csv",
@@ -154,10 +141,9 @@ if __name__ == "__main__":
         p0=101625,
         T0=296,
         g=9.80665,
-        output_file="rocket_trajectory.csv"  # Specify the output CSV file
+        output_file="rocket_trajectory.csv"
     )
 
-    # Driver code: call either function to implement either explicit Euler or RK4
     # rocket.solve_euler(0.001)
-	# rocket.solve_RK4(0.001)
+    # rocket.solve_rk4(0.001)
 	
