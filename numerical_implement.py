@@ -1,21 +1,23 @@
 import csv
 import math
 
+M_AIR = 0.0289652      # Molar mass of dry air (kg/mol)
+R_GAS = 8.31446        # Universal gas constant (J/(mol*K))
+LAPSE = 0.0065         # Temperature lapse rate (K/m)
+
+
 class Rocket:
-    def __init__(self, thrust_file, Cd, m, A, J, psea, p0, T0, g, output_file):
-        self.s = 0.01  # Altitude (m)
-        self.v = 0  # Velocity (m/s)
-        self.t = 0  # Time (s)
-        self.dt = 0  # Time step (s)
-        self.m = m  # Initial mass (kg)
-        self.A = A  # Cross-sectional area (m^2)
-        self.Cd = Cd  # Drag coefficient
-        self.J = J  # Specific impulse (s)
-        self.g = g  # Gravity (m/s^2)
-        self.psea = psea  # Sea level air density (kg/m^3)
-        self.p0 = p0  # Sea level pressure (Pa)
-        self.T0 = T0  # Sea level temperature (K)
-        self.p = psea  # Current air density (kg/m^3)
+    def __init__(self, thrust_file, Cd, m, A, J, m_prop, p0, T0, g, output_file):
+        self.s0 = 0.01            # Initial altitude (m)
+        self.v0 = 0.0             # Initial velocity (m/s)
+        self.m0 = m               # Initial (wet) mass (kg)
+        self.A = A                # Cross-sectional area (m^2)
+        self.Cd = Cd              # Drag coefficient
+        self.J = J                # Motor total impulse (N*s)
+        self.m_prop = m_prop      # Propellant mass (kg)
+        self.g = g                # Gravity (m/s^2)
+        self.p0 = p0              # Launch site pressure (Pa)
+        self.T0 = T0              # Launch site temperature (K)
         self.thrustcurve = self.load_thrust_curve(thrust_file)
         self.output_file = output_file
 
@@ -31,6 +33,7 @@ class Rocket:
         return thrustcurve
 
     def get_thrust(self, t):
+        """Linearly interpolate the thrust curve; zero after burnout."""
         for i in range(len(self.thrustcurve)):
             if t < self.thrustcurve[i][0]:
                 if i == 0:
@@ -38,98 +41,65 @@ class Rocket:
                 t1, T1 = self.thrustcurve[i - 1]
                 t2, T2 = self.thrustcurve[i]
                 return ((t - t1) / (t2 - t1)) * (T2 - T1) + T1
-        return 0
+        return 0.0
 
-    def update_pressure(self):
-        self.p = ((0.0289652 * self.p0) / (8.31446 * self.T0)) * math.pow((1 - (0.0065 * self.s / self.T0)), (((0.0289652 * self.g) / (8.31446 * 0.0065)) - 1))
+    def air_density(self, s):
+        """Barometric formula for air density (kg/m^3) at altitude s (m)."""
+        exponent = (M_AIR * self.g) / (R_GAS * LAPSE) - 1
+        return ((M_AIR * self.p0) / (R_GAS * self.T0)) * (1 - LAPSE * s / self.T0) ** exponent
 
-    def update_mass(self):
-        if self.get_thrust(self.t)>=0:
-            dm = (self.get_thrust(self.t) * self.dt * 0.030) / self.J
-            self.m -= dm
+    def derivatives(self, t, s, v, m):
+        """
+        RHS of the ODE system for the state (s, v, m).
+        Every quantity is computed from the arguments so each RK4 stage uses
+        its own intermediate state.
+        """
+        thrust = self.get_thrust(t)
+        drag = 0.5 * self.Cd * self.A * self.air_density(s) * v**2
+        ds_dt = v
+        dv_dt = (thrust - m * self.g - drag) / m
+        # Mass flow is proportional to thrust: dm/dt = -T * m_prop / J
+        dm_dt = -thrust * self.m_prop / self.J
+        return ds_dt, dv_dt, dm_dt
 
-    def acceleration(self):
-        drag = 0.5 * self.Cd * self.A * self.p * self.v**2 / self.m
-        thrust = self.get_thrust(self.t) / self.m
-        return thrust - self.g - drag
+    def _solve(self, step_fn, dt):
+        t, s, v, m = 0.0, self.s0, self.v0, self.m0
+        rows = []
+        while v >= 0:
+            s, v, m = step_fn(t, s, v, m, dt)
+            t += dt
+            rows.append([t, s, v, self.derivatives(t, s, v, m)[1]])
 
-    def update_euler(self):
-        self.update_pressure()
-        self.update_mass()
-        a = self.acceleration()
-        self.v += a * self.dt
-        self.s += self.v * self.dt
-        self.t += self.dt
-
-        with open(self.output_file, 'a', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerow([self.t, self.s, self.v, a])
-
-    def solve_euler(self, step):
-        self.dt = step
-
-        with open(self.output_file, 'w', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerow(["Time (s)", "Altitude (m)", "Velocity (m/s)", "Acceleration (m/s^2)"])
-
-        while self.v >= 0:
-            self.update_euler()
-
-    def update_rk4(self):
-        initial_mass = self.m
-        initial_pressure = self.p
-
-        self.update_pressure()
-        self.update_mass()
-
-        k1v = self.acceleration()
-        k1s = self.v
-	
-        self.t_temp = self.t + 0.5 * self.dt
-        self.s_temp = self.s + 0.5 * k1s * self.dt
-        self.v_temp = self.v + 0.5 * k1v * self.dt
-        self.update_pressure()
-        self.update_mass()
-        k2v = self.acceleration()
-        k2s = self.v
-
-        self.s_temp = self.s + 0.5 * k2s * self.dt - 0.5 * k1s * self.dt
-        self.v_temp = self.v + 0.5 * k2v * self.dt - 0.5 * k1v * self.dt
-        self.update_pressure()
-        self.update_mass()
-        k3v = self.acceleration()
-        k3s = self.v
-
-        self.s_temp = self.s + k3s * self.dt - 0.5 * k2s * self.dt
-        self.v_temp = self.v + k3v * self.dt - 0.5 * k2v * self.dt
-        self.update_pressure()
-        self.update_mass()
-        k4v = self.acceleration()
-        k4s = self.v
-
-        # RK4 update
-        self.v += (self.dt / 6) * (k1v + 2 * k2v + 2 * k3v + k4v)
-        self.s += (self.dt / 6) * (k1s + 2 * k2s + 2 * k3s + k4s)
-
-        self.m = initial_mass
-        self.p = initial_pressure
-        self.t += self.dt
-
-        with open(self.output_file, 'a', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerow([self.t, self.s, self.v, self.acceleration()])
-
-    def solve_rk4(self, step):
-        self.dt = step
-
-        with open(self.output_file, 'w', newline='') as file:
+        with open(self.output_file, "w", newline="") as file:
             writer = csv.writer(file)
             writer.writerow(["Time (s)", "Altitude (m)", "Velocity (m/s)", "Acceleration (m/s^2)"])
+            writer.writerows(rows)
+        return max(row[1] for row in rows)  # apogee (m)
 
-        while self.v >= 0:
-            self.update_rk4()
+    def euler_step(self, t, s, v, m, dt):
+        """Explicit Euler: every update uses only the state at t_n (eqs 17-18)"""
+        ds, dv, dm = self.derivatives(t, s, v, m)
+        return s + ds * dt, v + dv * dt, m + dm * dt
 
-# Driver code: call either function to implement either explicit Euler or Runge-Kutta 4th order (RK4)
+    def rk4_step(self, t, s, v, m, dt):
+        """Classical fourth-order Runge-Kutta on the full state (s, v, m) (eq 19)"""
+        k1 = self.derivatives(t, s, v, m)
+        k2 = self.derivatives(t + dt / 2, s + dt / 2 * k1[0], v + dt / 2 * k1[1], m + dt / 2 * k1[2])
+        k3 = self.derivatives(t + dt / 2, s + dt / 2 * k2[0], v + dt / 2 * k2[1], m + dt / 2 * k2[2])
+        k4 = self.derivatives(t + dt, s + dt * k3[0], v + dt * k3[1], m + dt * k3[2])
+        return tuple(
+            y + dt / 6 * (a + 2 * b + 2 * c + d)
+            for y, a, b, c, d in zip((s, v, m), k1, k2, k3, k4)
+        )
+
+    def solve_euler(self, dt):
+        return self._solve(self.euler_step, dt)
+
+    def solve_rk4(self, dt):
+        return self._solve(self.rk4_step, dt)
+
+
+# Driver code: call either function to implement explicit Euler or RK4
 if __name__ == "__main__":
     rocket = Rocket(
         thrust_file="AeroTech_F67W.csv",
@@ -137,13 +107,12 @@ if __name__ == "__main__":
         m=0.640,
         A=0.003425,
         J=61.1,
-        psea=1.229,
+        m_prop=0.030,
         p0=101625,
         T0=296,
         g=9.80665,
-        output_file="rocket_trajectory.csv"
+        output_file="rocket_trajectory.csv",
     )
 
-    # rocket.solve_euler(0.001)
-    # rocket.solve_rk4(0.001)
-	
+    # print(f"Explicit Euler apogee: {rocket.solve_euler(0.001):.3f} m")
+    # print(f"RK4 apogee: {rocket.solve_rk4(0.001):.3f} m")
